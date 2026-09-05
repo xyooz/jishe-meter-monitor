@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>集云电表助手</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --text: #162033;
+      --muted: #738096;
+      --accent: #2563eb;
+      --accent2: #0ea5e9;
+      --good: #0f9f6e;
+      --line: #e6ebf2;
+      --shadow: 0 18px 50px rgba(24, 39, 75, .10);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --card: #172033;
+        --text: #edf3ff;
+        --muted: #96a4bd;
+        --line: #2b3852;
+        --shadow: 0 18px 50px rgba(0,0,0,.25);
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); }
+    .wrap { width: min(920px, calc(100% - 28px)); margin: 0 auto; padding: 34px 0 60px; }
+    .header { display:flex; align-items:end; justify-content:space-between; gap:20px; margin-bottom:22px; }
+    h1 { margin:0; font-size:clamp(26px,4vw,38px); letter-spacing:-.03em; }
+    .sub { margin-top:8px; color:var(--muted); font-size:14px; }
+    .dot { width:10px; height:10px; border-radius:50%; background:var(--good); display:inline-block; margin-right:7px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:22px; padding:22px; box-shadow:var(--shadow); }
+    .hero { grid-column:1/-1; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:white; border:none; }
+    .label { font-size:14px; color:var(--muted); margin-bottom:10px; }
+    .hero .label { color:rgba(255,255,255,.8); }
+    .value { font-size:clamp(32px,8vw,58px); line-height:1; font-weight:760; letter-spacing:-.04em; }
+    .unit { font-size:16px; font-weight:600; margin-left:6px; opacity:.8; }
+    .meta { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:18px; font-size:14px; color:var(--muted); }
+    .hero .meta { color:rgba(255,255,255,.82); }
+    .actions { display:flex; gap:12px; margin-top:18px; flex-wrap:wrap; }
+    button { border:0; border-radius:14px; padding:12px 17px; font-size:15px; font-weight:650; cursor:pointer; }
+    .primary { background:var(--accent); color:white; }
+    .secondary { background:var(--card); color:var(--text); border:1px solid var(--line); }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .status { min-height:20px; margin-top:14px; color:var(--muted); font-size:14px; }
+    .error { color:#ef4444; }
+    @media (max-width:640px) {
+      .wrap { width:min(100% - 20px, 920px); padding-top:20px; }
+      .grid { grid-template-columns:1fr; }
+      .hero { grid-column:auto; }
+      .header { align-items:flex-start; flex-direction:column; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="header">
+      <div>
+        <h1>⚡ 集云电表助手</h1>
+        <div class="sub"><span class="dot"></span>远程电表状态看板</div>
+      </div>
+      <div class="sub" id="pageUpdated">正在加载…</div>
+    </div>
+
+    <section class="grid">
+      <article class="card hero">
+        <div class="label">剩余余额</div>
+        <div><span class="value" id="balance">--</span><span class="unit">元</span></div>
+        <div class="meta"><span>最近抄读</span><span id="lastRead">--</span></div>
+      </article>
+
+      <article class="card">
+        <div class="label">累计用电</div>
+        <div><span class="value" id="kwh">--</span><span class="unit">kWh</span></div>
+      </article>
+
+      <article class="card">
+        <div class="label">电闸状态</div>
+        <div class="value" id="valve" style="font-size:34px">--</div>
+      </article>
+    </section>
+
+    <div class="actions">
+      <button class="secondary" id="refreshBtn">刷新数据</button>
+      <button class="primary" id="readBtn">立即抄读</button>
+    </div>
+    <div class="status" id="statusText"></div>
+  </main>
+
+<script>
+  const balance = document.getElementById('balance');
+  const kwh = document.getElementById('kwh');
+  const lastRead = document.getElementById('lastRead');
+  const valve = document.getElementById('valve');
+  const statusText = document.getElementById('statusText');
+  const pageUpdated = document.getElementById('pageUpdated');
+  const refreshBtn = document.getElementById('refreshBtn');
+  const readBtn = document.getElementById('readBtn');
+
+  function render(data) {
+    balance.textContent = Number(data.balance).toFixed(3);
+    kwh.textContent = Number(data.kwh).toFixed(2);
+    lastRead.textContent = data.last_read || '--';
+    valve.textContent = data.valve ? '合闸' : '断闸';
+    pageUpdated.textContent = '页面更新 ' + new Date().toLocaleTimeString();
+  }
+
+  async function callApi(url, options = {}) {
+    const r = await fetch(url, options);
+    const body = await r.json();
+    if (!r.ok || !body.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    return body;
+  }
+
+  async function refresh() {
+    refreshBtn.disabled = true;
+    statusText.className = 'status';
+    statusText.textContent = '正在查询服务器中的最新数据…';
+    try {
+      const body = await callApi('/api/status');
+      render(body.data);
+      statusText.textContent = '刷新完成';
+    } catch (e) {
+      statusText.className = 'status error';
+      statusText.textContent = '刷新失败：' + e.message;
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  }
+
+  async function readNow() {
+    readBtn.disabled = true;
+    refreshBtn.disabled = true;
+    statusText.className = 'status';
+    statusText.textContent = '正在远程抄读电表，请稍候…';
+    try {
+      const body = await callApi('/api/read', {method:'POST'});
+      render(body.data);
+      const interval = body.read?.Data?.interval;
+      statusText.textContent = interval != null ? `抄读成功，耗时约 ${interval} 秒` : '抄读成功';
+    } catch (e) {
+      statusText.className = 'status error';
+      statusText.textContent = '抄读失败：' + e.message;
+    } finally {
+      readBtn.disabled = false;
+      refreshBtn.disabled = false;
+    }
+  }
+
+  refreshBtn.addEventListener('click', refresh);
+  readBtn.addEventListener('click', readNow);
+  refresh();
+  setInterval(refresh, 60_000);
+</script>
+</body>
+</html>
