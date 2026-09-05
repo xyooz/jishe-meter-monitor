@@ -3,6 +3,7 @@ import dashboardHtml from "./dashboard.html";
 const BASE_URL = "https://yff.jisheyun.com/yzxcx/prod/u/api";
 const QUERY_URL = `${BASE_URL}/Customer/Login/GetMeterVistor`;
 const SHANGHAI_TZ = "Asia/Shanghai";
+const DATA_START_AT = "2026-09-06 00:00:00";
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -101,15 +102,16 @@ async function getHistory(env, days = 7) {
             replace(created_at, ' ', 'T') || 'Z' AS collected_at
      FROM meter_readings
      WHERE datetime(created_at) >= datetime('now', ?)
+       AND read_time >= ?
      ORDER BY datetime(created_at) ASC, id ASC`
   )
-    .bind(`-${safeDays} days`)
+    .bind(`-${safeDays} days`, DATA_START_AT)
     .all();
   return result.results || [];
 }
 
 async function getCalendar(env, requestedMonth) {
-  if (!env.DB) return { month: requestedMonth, days: [] };
+  if (!env.DB) return { month: requestedMonth, days: [], dataStartAt: DATA_START_AT };
   const currentMonth = shanghaiDateKey(new Date()).slice(0, 7);
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(requestedMonth || "")
     ? requestedMonth
@@ -124,6 +126,7 @@ async function getCalendar(env, requestedMonth) {
               LAG(kwh) OVER (ORDER BY datetime(read_time), id) AS previous_kwh,
               LAG(balance) OVER (ORDER BY datetime(read_time), id) AS previous_balance
        FROM meter_readings
+       WHERE read_time >= ?
      ), daily AS (
        SELECT substr(read_time, 1, 10) AS day,
               CASE WHEN previous_kwh IS NOT NULL AND kwh >= previous_kwh
@@ -142,10 +145,10 @@ async function getCalendar(env, requestedMonth) {
      GROUP BY day
      ORDER BY day ASC`
   )
-    .bind(start, end)
+    .bind(DATA_START_AT, start, end)
     .all();
 
-  return { month, days: result.results || [] };
+  return { month, days: result.results || [], dataStartAt: DATA_START_AT };
 }
 
 function median(values) {
@@ -249,7 +252,7 @@ async function ingestReading(request, env) {
   }
 
   const inserted = await saveReading(env, status, "github-scheduled-read");
-  return json({ ok: true, inserted, data: status });
+  return json({ ok: true, inserted, data: status, includedInStats: status.lastRead >= DATA_START_AT });
 }
 
 async function apiRouter(request, env) {
@@ -261,18 +264,18 @@ async function apiRouter(request, env) {
     }
 
     if (url.pathname === "/api/status" && request.method === "GET") {
-      return json({ ok: true, data: await latestStatus(env, "query") });
+      return json({ ok: true, data: await latestStatus(env, "query"), dataStartAt: DATA_START_AT });
     }
 
     if (url.pathname === "/api/read" && request.method === "POST") {
       const status = await latestStatus(env, "query");
       const rows = await getHistory(env, 7);
-      return json({ ok: true, data: { status, history: rows, summary: summarize(rows) } });
+      return json({ ok: true, data: { status, history: rows, summary: summarize(rows), dataStartAt: DATA_START_AT } });
     }
 
     if (url.pathname === "/api/history" && request.method === "GET") {
       const days = url.searchParams.get("days") || "7";
-      return json({ ok: true, data: await getHistory(env, days) });
+      return json({ ok: true, data: await getHistory(env, days), dataStartAt: DATA_START_AT });
     }
 
     if (url.pathname === "/api/calendar" && request.method === "GET") {
@@ -283,7 +286,7 @@ async function apiRouter(request, env) {
       const days = url.searchParams.get("days") || "7";
       const status = await latestStatus(env, "dashboard");
       const rows = await getHistory(env, days);
-      return json({ ok: true, data: { status, history: rows, summary: summarize(rows) } });
+      return json({ ok: true, data: { status, history: rows, summary: summarize(rows), dataStartAt: DATA_START_AT } });
     }
 
     return null;
