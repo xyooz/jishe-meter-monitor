@@ -8,6 +8,21 @@ required = ["JISHE_PHONE", "JISHE_CUSTOMER_ID", "JISHE_ROOM_ID", "JISHE_METER_ID
 [triggers]
 crons = ["*/5 * * * *"]
 
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true
+
 [assets]
 directory = "./public"
 binding = "ASSETS"
