@@ -22,15 +22,16 @@
     .timeline-item{padding:12px 0;border-bottom:1px solid var(--line)}.timeline-time{font-size:12px;color:var(--muted)}.timeline-main{margin-top:4px;font-size:14px}
     .section-title{font-size:15px;font-weight:700;margin-bottom:8px}.status-good{color:var(--good)}.status-bad{color:#dc2626}
     .notice{display:none;margin-bottom:14px;padding:11px 13px;border-radius:10px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa}
+    .calendar-card{margin-top:14px}.calendar-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.calendar-title{font-size:17px;font-weight:700}.calendar-summary{font-size:13px;color:var(--muted);margin-top:4px}.calendar-nav{display:flex;align-items:center;gap:8px}.calendar-nav button{padding:7px 11px}.calendar-month{min-width:90px;text-align:center;font-weight:700}.calendar-weekdays,.calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:7px}.calendar-weekdays div{text-align:center;color:var(--muted);font-size:12px;padding:5px}.calendar-day{min-height:96px;border:1px solid var(--line);border-radius:11px;padding:9px;background:#fbfcff}.calendar-day.empty{border:0;background:transparent}.calendar-day.today{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}.day-number{font-weight:700;font-size:13px}.day-kwh{margin-top:12px;font-size:14px;font-weight:650}.day-cost{margin-top:4px;color:var(--muted);font-size:12px}.day-empty{margin-top:14px;color:#b0b7c5;font-size:12px}
     @media(max-width:850px){.grid{grid-template-columns:repeat(2,1fr)}.chart-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.chart{height:300px}}
-    @media(max-width:520px){.grid{grid-template-columns:1fr 1fr}.value{font-size:22px}.card{padding:14px}.wrap{padding-top:16px}}
+    @media(max-width:520px){.grid{grid-template-columns:1fr 1fr}.value{font-size:22px}.card{padding:14px}.wrap{padding-top:16px}.calendar-weekdays,.calendar-grid{gap:3px}.calendar-day{min-height:75px;padding:6px}.day-kwh{margin-top:8px;font-size:11px}.day-cost,.day-empty{font-size:10px}.calendar-head{align-items:flex-start;flex-direction:column}}
   </style>
 </head>
 <body>
 <div class="wrap">
   <div class="top">
     <div><h1>⚡ 集云电表助手</h1><div class="sub" id="lastUpdate">正在加载...</div></div>
-    <div class="actions"><button class="ghost" id="refreshBtn">刷新数据</button><button class="primary" id="readBtn">立即抄读</button></div>
+    <div class="actions"><button class="primary" id="refreshBtn">查询最新数据</button></div>
   </div>
 
   <div class="notice" id="notice"></div>
@@ -53,18 +54,29 @@
     <div class="card"><div class="section-title">用电时间轴（最近 7 天）</div><div id="trendChart" class="chart"></div></div>
     <div class="card"><div class="section-title">最近记录</div><div id="timeline" class="timeline"></div></div>
   </div>
+
+  <div class="card calendar-card">
+    <div class="calendar-head">
+      <div><div class="calendar-title">月度用电日历</div><div class="calendar-summary" id="calendarSummary">正在统计...</div></div>
+      <div class="calendar-nav"><button class="ghost" id="prevMonth">‹</button><div class="calendar-month" id="calendarMonth">--</div><button class="ghost" id="nextMonth">›</button></div>
+    </div>
+    <div class="calendar-weekdays"><div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div></div>
+    <div class="calendar-grid" id="calendarGrid"></div>
+  </div>
 </div>
 
 <script>
   const $ = (id) => document.getElementById(id);
   const chart = echarts.init($("trendChart"));
+  let calendarCursor = new Date();
+  calendarCursor.setDate(1);
   const fmt = (v, digits=2) => Number.isFinite(Number(v)) ? Number(v).toFixed(digits) : "--";
   const showNotice = (msg) => { const el=$("notice"); el.textContent=msg; el.style.display="block"; };
   const hideNotice = () => $("notice").style.display="none";
 
   function renderHistory(history){
-    const rows = [...history].sort((a,b)=>new Date(a.read_time)-new Date(b.read_time));
-    const x = rows.map(r => r.read_time?.replace("T"," ").slice(5,16));
+    const rows = [...history].sort((a,b)=>new Date(a.collected_at)-new Date(b.collected_at));
+    const x = rows.map(r => r.collected_at ? new Date(r.collected_at).toLocaleString([], {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "--");
     const base = rows.length ? Number(rows[0].kwh) : 0;
     const y = rows.map(r => +(Number(r.kwh)-base).toFixed(3));
     chart.setOption({
@@ -77,8 +89,8 @@
 
     $("timeline").innerHTML = rows.slice(-12).reverse().map(r => `
       <div class="timeline-item">
-        <div class="timeline-time">${r.read_time || "--"}</div>
-        <div class="timeline-main">${fmt(r.kwh,3)} kWh · 余额 ¥${fmt(r.balance,3)} · ${r.source || "query"}</div>
+        <div class="timeline-time">采集于 ${r.collected_at ? new Date(r.collected_at).toLocaleString() : "--"}</div>
+        <div class="timeline-main">${fmt(r.kwh,3)} kWh · 余额 ¥${fmt(r.balance,3)} · 电表抄读 ${r.read_time || "--"}</div>
       </div>`).join("") || '<div class="small">暂无历史数据，刷新几次后会开始形成时间轴。</div>';
   }
 
@@ -98,29 +110,49 @@
     renderHistory(history || []);
   }
 
+  const calendarKey = () => `${calendarCursor.getFullYear()}-${String(calendarCursor.getMonth()+1).padStart(2,"0")}`;
+  function renderCalendar(data){
+    const [year, month] = data.month.split("-").map(Number);
+    const byDay = new Map((data.days || []).map(item => [Number(item.day.slice(-2)), item]));
+    const firstWeekday = new Date(year, month - 1, 1).getDay();
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const today = new Date();
+    const cells = Array.from({length:firstWeekday},()=>'<div class="calendar-day empty"></div>');
+    for(let day=1;day<=daysInMonth;day++){
+      const item=byDay.get(day);
+      const isToday=year===today.getFullYear()&&month===today.getMonth()+1&&day===today.getDate();
+      cells.push(`<div class="calendar-day ${isToday?"today":""}"><div class="day-number">${day}</div>${item?`<div class="day-kwh">${fmt(item.kwh,3)} kWh</div><div class="day-cost">¥${fmt(item.cost,3)}</div>`:'<div class="day-empty">暂无数据</div>'}</div>`);
+    }
+    $("calendarGrid").innerHTML=cells.join("");
+    $("calendarMonth").textContent=`${year} 年 ${month} 月`;
+    const totalKwh=(data.days||[]).reduce((sum,item)=>sum+Number(item.kwh||0),0);
+    const totalCost=(data.days||[]).reduce((sum,item)=>sum+Number(item.cost||0),0);
+    $("calendarSummary").textContent=`本月 ${fmt(totalKwh,3)} kWh · 费用 ¥${fmt(totalCost,3)}`;
+  }
+
+  async function loadCalendar(){
+    const r=await fetch(`/api/calendar?month=${calendarKey()}`,{cache:"no-store"});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.error||"日历加载失败");
+    renderCalendar(j.data);
+  }
+
   async function loadDashboard(){
     hideNotice();
     const r = await fetch("/api/dashboard?days=7", {cache:"no-store"});
     const j = await r.json();
     if(!j.ok) throw new Error(j.error || "加载失败");
     render(j.data);
-  }
-
-  async function manualRead(){
-    const btn=$("readBtn"); btn.disabled=true; btn.textContent="抄读中..."; hideNotice();
-    try{
-      const r = await fetch("/api/read", {method:"POST"});
-      const j = await r.json();
-      if(!j.ok) throw new Error(j.error || "抄读失败");
-      await loadDashboard();
-    }catch(e){showNotice(e.message)} finally{btn.disabled=false;btn.textContent="立即抄读"}
+    loadCalendar().catch(e=>showNotice(e.message));
   }
 
   $("refreshBtn").addEventListener("click", ()=>loadDashboard().catch(e=>showNotice(e.message)));
-  $("readBtn").addEventListener("click", manualRead);
+  $("prevMonth").addEventListener("click",()=>{calendarCursor.setMonth(calendarCursor.getMonth()-1);loadCalendar().catch(e=>showNotice(e.message));});
+  $("nextMonth").addEventListener("click",()=>{calendarCursor.setMonth(calendarCursor.getMonth()+1);loadCalendar().catch(e=>showNotice(e.message));});
   window.addEventListener("resize", ()=>chart.resize());
   loadDashboard().catch(e=>showNotice(e.message));
-  setInterval(()=>loadDashboard().catch(()=>{}), 60000);
+  setInterval(()=>loadDashboard().catch(()=>{}), 60 * 1000);
 </script>
 </body>
 </html>
+
