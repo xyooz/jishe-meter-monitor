@@ -5,31 +5,60 @@
 ## 当前功能
 
 - 查询余额、累计用电量、最近抄读时间和电闸状态
-- 手动触发远程实时抄读
-- Cloudflare Workers 提供后端 API
-- Cloudflare D1 保存历史抄读记录
-- 7 日用电时间轴
-- 今日用电、近 24 小时用电、7 日平均用电
-- 根据历史余额变化估算电价与今日电费
+- GitHub Actions 每 5 分钟主动远程抄表
+- 抄表完成后将结果推送到 Cloudflare Worker，并写入 D1
+- Cloudflare Workers 提供查询、历史、统计和月历 API
+- Cloudflare D1 保存连续历史记录
+- 7 日用电时间轴与最近记录
+- 今日用电、近 24 小时用电、采样期日均用电
+- 月度用电/费用日历
+- 基于有效相邻样本的中位数估算电价，自动规避充值导致的余额跳变
+- 中国时区（Asia/Shanghai）统计口径
 - 手机和桌面自适应 Web 看板
+- Basic Auth 保护看板
 
 > 历史统计从部署并开始记录后逐步积累。刚上线时没有足够历史数据，部分指标会显示 0 或“数据不足”。
+
+## 数据链路
+
+```text
+GitHub Actions（每 5 分钟）
+        ↓
+集云社 Reading 接口：主动远程抄表
+        ↓
+GetMeterVistor：查询最新余额/电量
+        ↓
+POST /api/ingest（Bearer Token）
+        ↓
+Cloudflare Worker
+        ↓
+D1：meter_readings
+        ↓
+Web 看板 / API / 月度统计
+```
+
+这样即使无人打开网页，D1 也会持续积累约 5 分钟粒度的历史数据。
 
 ## 项目结构
 
 ```text
-public/index.html      Web 看板（ECharts）
-src/index.js           Cloudflare Worker API
-schema.sql             D1 数据库表结构
-wrangler.toml          Cloudflare 配置
-package.json           Wrangler 开发/部署脚本
-jishe_meter.py         原始 Python 接口验证脚本
-.github/workflows/     GitHub Actions 接口测试
+public/index.html              Web 看板（ECharts）
+src/dashboard.html            Worker 直出备用看板
+src/index.js                   Cloudflare Worker API
+schema.sql                     D1 数据库表结构
+wrangler.toml                  Cloudflare 配置
+package.json                   Wrangler 开发/部署脚本
+jishe_meter.py                 抄表与查询脚本
+.github/workflows/test.yml     5 分钟定时抄读与 D1 入库
 ```
 
-## 安全说明
+## Secrets
 
-不要把手机号、房间 ID、电表 ID 或签名写进仓库。Cloudflare 部署时使用 Worker Secrets：
+不要把手机号、房间 ID、电表 ID、签名或鉴权 Token 写进仓库。
+
+### GitHub Actions Secrets
+
+需要保留原有 5 个电表参数：
 
 - `JISHE_PHONE`
 - `JISHE_CUSTOMER_ID`
@@ -37,85 +66,75 @@ jishe_meter.py         原始 Python 接口验证脚本
 - `JISHE_METER_ID`
 - `JISHE_SIGN`
 
-## Cloudflare 部署
+新增：
 
-### 1. 创建 D1 数据库
+- `DASHBOARD_BASE_URL`：Cloudflare Worker 公网根地址，例如 `https://jishe-meter-monitor.xxx.workers.dev`
+- `INGEST_TOKEN`：随机生成的长字符串，用于 GitHub → Cloudflare 入库鉴权
 
-在 Cloudflare Dashboard 中创建一个 D1 数据库：
+如果后两个没有配置，GitHub Actions 仍会完成远程抄表，但会跳过 D1 入库并打印 warning。
+
+### Cloudflare Worker Secrets
+
+- `JISHE_PHONE`
+- `DASHBOARD_PASSWORD`
+- `INGEST_TOKEN`
+
+其中 Cloudflare 的 `INGEST_TOKEN` 必须与 GitHub Actions 中的同名 Secret 完全一致。
+
+生成一个随机 Token 的示例：
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+## Cloudflare / D1
+
+生产 D1 已在 `wrangler.toml` 中绑定：
 
 ```text
-jishe-meter-history
+binding: DB
+database: jishe-meter-history
 ```
 
-创建后复制 Database ID，把 `wrangler.toml` 中：
-
-```toml
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
-```
-
-替换为真实 ID。
-
-### 2. 初始化数据库
-
-本机安装依赖：
+首次部署或重建数据库时执行：
 
 ```bash
 npm install
-```
-
-登录 Cloudflare：
-
-```bash
 npx wrangler login
-```
-
-初始化远程 D1：
-
-```bash
 npm run db:init:remote
 ```
 
-### 3. 配置 Secrets
-
-依次执行：
+配置 Worker Secrets：
 
 ```bash
 npx wrangler secret put JISHE_PHONE
-npx wrangler secret put JISHE_CUSTOMER_ID
-npx wrangler secret put JISHE_ROOM_ID
-npx wrangler secret put JISHE_METER_ID
-npx wrangler secret put JISHE_SIGN
+npx wrangler secret put DASHBOARD_PASSWORD
+npx wrangler secret put INGEST_TOKEN
 ```
 
-### 4. 部署
+部署：
 
 ```bash
 npm run deploy
 ```
 
-部署成功后会得到一个 `*.workers.dev` 地址，可直接在手机或电脑浏览器访问。
-
 ## API
 
 ```text
-GET  /api/status       查询后台已有的最新状态
-POST /api/read         触发一次远程实时抄读，并保存结果
+GET  /api/status       查询集云社后台当前状态并去重保存
+POST /api/read         查询当前状态并返回看板数据（不主动远程抄表）
+POST /api/ingest       GitHub Actions 专用历史入库接口，Bearer Token 鉴权
 GET  /api/history      查询历史记录
+GET  /api/calendar     查询月度每日用电/费用
 GET  /api/dashboard    返回状态、历史数据与统计指标
 ```
 
-Web 页面每 60 秒刷新一次后台已有状态，但不会每分钟主动触发远程抄表。主动抄表只在点击“立即抄读”时发生。
+`/api/ingest` 不使用看板 Basic Auth，而使用独立的 `INGEST_TOKEN`；其他页面和 API 由 `DASHBOARD_PASSWORD` 保护。
 
-## 关于统计
+## 统计口径
 
-D1 会在查询或抄读后保存一条历史记录，因此历史时间轴会从首次部署使用后开始形成。
-
-当前统计包括：
-
-- 今日累计用电
-- 最近 24 小时用电
-- 最近 7 天平均日用电
-- 根据历史余额与用电差值估算电价
-- 今日估算电费
-
-随着历史数据积累，可以继续扩展每日柱状图、月度统计、低余额提醒、月底费用预测等功能。
+- “今日”按 `Asia/Shanghai` 日期边界计算
+- 近 24 小时按真实滚动时间窗口计算
+- 日均用电按最近 7 天内实际存在采样数据的日期数计算，而不是数据库不足 7 天时强行除以 7
+- 电价只使用“电量增加且余额减少”的相邻样本计算，并取中位数，避免充值导致的余额上升污染估算
+- 月度费用同样忽略余额增加的充值事件
