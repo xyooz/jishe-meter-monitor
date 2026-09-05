@@ -1,0 +1,14 @@
+{
+  "name": "jishe-meter-monitor",
+  "private": true,
+  "version": "0.2.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init:local": "wrangler d1 execute jishe-meter-history --local --file=./schema.sql",
+    "db:init:remote": "wrangler d1 execute jishe-meter-history --remote --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4.35.0"
+  }
+}
