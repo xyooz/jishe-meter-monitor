@@ -3,7 +3,7 @@ main = "src/index.js"
 compatibility_date = "2026-09-05"
 
 [secrets]
-required = ["JISHE_PHONE", "DASHBOARD_PASSWORD"]
+required = ["JISHE_PHONE", "DASHBOARD_PASSWORD", "INGEST_TOKEN"]
 
 [assets]
 directory = "./public"
@@ -18,4 +18,3 @@ database_id = "6c089bb0-41b6-48e1-bc4d-79e5d0f9fe3f"
 type = "Text"
 globs = ["**/*.html"]
 fallthrough = true
-
