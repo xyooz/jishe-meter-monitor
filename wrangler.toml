@@ -2,6 +2,9 @@ name = "jishe-meter-monitor"
 main = "src/index.js"
 compatibility_date = "2026-09-05"
 
+[secrets]
+required = ["JISHE_PHONE", "DASHBOARD_PASSWORD"]
+
 [assets]
 directory = "./public"
 binding = "ASSETS"
@@ -9,4 +12,10 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "jishe-meter-history"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "6c089bb0-41b6-48e1-bc4d-79e5d0f9fe3f"
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
+
