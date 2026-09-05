@@ -51,10 +51,10 @@ def query_meter() -> dict:
 
     meter = meters[0]
     return {
-        "balance": meter.get("RoomBalance"),
-        "kwh": meter.get("ReadKwh"),
+        "balance": float(meter.get("RoomBalance") or 0),
+        "kwh": float(meter.get("ReadKwh") or 0),
         "last_read": meter.get("LastReadTime"),
-        "valve": meter.get("ValveState"),
+        "valve": bool(meter.get("ValveState")),
     }
 
 
@@ -91,6 +91,12 @@ def read_meter() -> dict:
     return payload
 
 
+def read_and_query() -> tuple[dict, dict]:
+    result = read_meter()
+    time.sleep(2)
+    return result, query_meter()
+
+
 def print_status(status: dict) -> None:
     valve = "合闸" if status["valve"] else "断闸"
     print(f"余额：{status['balance']} 元")
@@ -107,15 +113,19 @@ def main() -> None:
         return
 
     if mode == "read":
-        result = read_meter()
+        result, status = read_and_query()
         print("抄读接口返回：")
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        time.sleep(2)
         print("\n最新状态：")
-        print_status(query_meter())
+        print_status(status)
         return
 
-    raise SystemExit("用法：python jishe_meter.py query | read")
+    if mode == "read-json":
+        _, status = read_and_query()
+        print(json.dumps(status, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    raise SystemExit("用法：python jishe_meter.py query | read | read-json")
 
 
 if __name__ == "__main__":
