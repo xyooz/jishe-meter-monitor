@@ -37,6 +37,11 @@ function shanghaiDateKey(value) {
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
+function nextDateKey(dateKey) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
+}
+
 async function queryMeter(env) {
   const url = new URL(QUERY_URL);
   url.searchParams.set("phoneNumber", env.JISHE_PHONE);
@@ -156,6 +161,119 @@ function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+async function getDayDetails(env, requestedDate) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate || "") ? requestedDate : null;
+  if (!date) throw new Error("日期格式无效");
+
+  const start = `${date} 00:00:00`;
+  const end = `${nextDateKey(date)} 00:00:00`;
+  const officialStartDate = DATA_START_AT.slice(0, 10);
+  if (!env.DB || date < officialStartDate) {
+    return {
+      date,
+      dataStartAt: DATA_START_AT,
+      summary: {
+        totalKwh: 0,
+        cost: 0,
+        samples: 0,
+        startBalance: null,
+        endBalance: null,
+        avgPerHour: null,
+        peakHour: null,
+        pricePerKwh: null,
+      },
+      cumulative: [],
+      hourly: Array.from({ length: 24 }, (_, hour) => ({ hour, kwh: 0 })),
+      records: [],
+    };
+  }
+
+  const baseline = await env.DB.prepare(
+    `SELECT id, read_time, kwh, balance, valve_state, source,
+            replace(created_at, ' ', 'T') || 'Z' AS collected_at
+     FROM meter_readings
+     WHERE read_time >= ? AND read_time < ?
+     ORDER BY datetime(read_time) DESC, id DESC
+     LIMIT 1`
+  )
+    .bind(DATA_START_AT, start)
+    .first();
+
+  const result = await env.DB.prepare(
+    `SELECT id, read_time, kwh, balance, valve_state, source,
+            replace(created_at, ' ', 'T') || 'Z' AS collected_at
+     FROM meter_readings
+     WHERE read_time >= ? AND read_time < ? AND read_time >= ?
+     ORDER BY datetime(read_time) ASC, id ASC`
+  )
+    .bind(start, end, DATA_START_AT)
+    .all();
+
+  const records = result.results || [];
+  const hourly = Array.from({ length: 24 }, (_, hour) => ({ hour, kwh: 0 }));
+  const cumulative = [];
+  const unitPrices = [];
+  let totalKwh = 0;
+  let cost = 0;
+  let previous = baseline || null;
+
+  for (const current of records) {
+    if (previous) {
+      const kwhDelta = Number(current.kwh) - Number(previous.kwh);
+      const balanceDelta = Number(previous.balance) - Number(current.balance);
+      if (Number.isFinite(kwhDelta) && kwhDelta >= 0) {
+        totalKwh += kwhDelta;
+        const hour = Number(String(current.read_time || "").slice(11, 13));
+        if (Number.isInteger(hour) && hour >= 0 && hour <= 23) hourly[hour].kwh += kwhDelta;
+        if (kwhDelta > 0 && Number.isFinite(balanceDelta) && balanceDelta > 0) {
+          cost += balanceDelta;
+          const price = balanceDelta / kwhDelta;
+          if (Number.isFinite(price) && price > 0.05 && price < 10) unitPrices.push(price);
+        }
+      }
+    }
+    cumulative.push({
+      time: current.read_time,
+      kwh: Number(totalKwh.toFixed(3)),
+      meterKwh: Number(current.kwh),
+      balance: Number(current.balance),
+    });
+    previous = current;
+  }
+
+  const first = records[0] || null;
+  const last = records.at(-1) || null;
+  let observedHours = null;
+  if (first && last) {
+    const firstTime = new Date(`${first.read_time.replace(" ", "T")}+08:00`);
+    const lastTime = new Date(`${last.read_time.replace(" ", "T")}+08:00`);
+    const diff = (lastTime.getTime() - firstTime.getTime()) / 3600000;
+    if (Number.isFinite(diff) && diff > 0) observedHours = diff;
+  }
+
+  const peak = hourly.reduce((best, item) => (item.kwh > best.kwh ? item : best), { hour: 0, kwh: 0 });
+  const startBalance = baseline ? Number(baseline.balance) : first ? Number(first.balance) : null;
+  const endBalance = last ? Number(last.balance) : null;
+
+  return {
+    date,
+    dataStartAt: DATA_START_AT,
+    summary: {
+      totalKwh: Number(totalKwh.toFixed(3)),
+      cost: Number(cost.toFixed(3)),
+      samples: records.length,
+      startBalance,
+      endBalance,
+      avgPerHour: observedHours ? Number((totalKwh / observedHours).toFixed(3)) : null,
+      peakHour: peak.kwh > 0 ? peak.hour : null,
+      pricePerKwh: median(unitPrices),
+    },
+    cumulative,
+    hourly: hourly.map(item => ({ hour: item.hour, kwh: Number(item.kwh.toFixed(3)) })),
+    records,
+  };
 }
 
 function summarize(rows) {
@@ -282,6 +400,10 @@ async function apiRouter(request, env) {
       return json({ ok: true, data: await getCalendar(env, url.searchParams.get("month")) });
     }
 
+    if (url.pathname === "/api/day" && request.method === "GET") {
+      return json({ ok: true, data: await getDayDetails(env, url.searchParams.get("date")) });
+    }
+
     if (url.pathname === "/api/dashboard" && request.method === "GET") {
       const days = url.searchParams.get("days") || "7";
       const status = await latestStatus(env, "dashboard");
@@ -290,7 +412,8 @@ async function apiRouter(request, env) {
     }
 
     return null;
-  } catch {
+  } catch (error) {
+    if (error?.message === "日期格式无效") return json({ ok: false, error: error.message }, 400);
     return json({ ok: false, error: "电表服务暂时不可用，请稍后重试。" }, 500);
   }
 }
