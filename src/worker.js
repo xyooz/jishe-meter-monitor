@@ -14,13 +14,37 @@ function requireSecret(env, name) {
   return String(value).trim();
 }
 
+function constantTimeEqual(a = "", b = "") {
+  const aa = new TextEncoder().encode(String(a));
+  const bb = new TextEncoder().encode(String(b));
+  const length = Math.max(aa.length, bb.length);
+  let diff = aa.length ^ bb.length;
+  for (let i = 0; i < length; i += 1) {
+    diff |= (aa[i % Math.max(aa.length, 1)] || 0) ^ (bb[i % Math.max(bb.length, 1)] || 0);
+  }
+  return diff === 0;
+}
+
+function isDashboardAuthorized(request, env) {
+  if (!env.DASHBOARD_PASSWORD) return false;
+  try {
+    const auth = request.headers.get("Authorization") || "";
+    if (!auth.startsWith("Basic ")) return false;
+    const decoded = atob(auth.slice(6));
+    const password = decoded.slice(decoded.indexOf(":") + 1);
+    return constantTimeEqual(password, env.DASHBOARD_PASSWORD);
+  } catch {
+    return false;
+  }
+}
+
 function errorMessage(error) {
   if (error?.name === "AbortError") return "request timed out";
   return String(error?.message || error || "unknown error").slice(0, 500);
 }
 
-function logCron(payload) {
-  console.log(JSON.stringify({ event: "meter_cron", ...payload }));
+function logMeter(event, payload) {
+  console.log(JSON.stringify({ event, ...payload }));
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
@@ -30,6 +54,16 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function parseMeterResponse(response, stage) {
+  const text = await response.text();
+  if (!response.ok) throw new Error(`${stage} HTTP ${response.status}: ${text.slice(0, 200)}`);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${stage} returned non-JSON: ${text.slice(0, 200)}`);
   }
 }
 
@@ -59,13 +93,12 @@ async function readMeterOnce(env) {
     15000
   );
 
-  if (!response.ok) throw new Error(`Meter read HTTP ${response.status}`);
-  const payload = await response.json();
+  const payload = await parseMeterResponse(response, "Meter read");
   if (!payload?.Code) throw new Error(payload?.Message || "Meter read failed");
   return payload;
 }
 
-async function readMeterWithRetry(env) {
+async function readMeterWithRetry(env, eventName) {
   const retryDelays = [0, 1500, 3000];
   let lastError;
 
@@ -76,7 +109,7 @@ async function readMeterWithRetry(env) {
       return attempt;
     } catch (error) {
       lastError = error;
-      logCron({ ok: false, stage: "reading", attempt, error: errorMessage(error) });
+      logMeter(eventName, { ok: false, stage: "reading", attempt, error: errorMessage(error) });
     }
   }
 
@@ -104,8 +137,7 @@ async function queryMeterOnce(env) {
     12000
   );
 
-  if (!response.ok) throw new Error(`Meter query HTTP ${response.status}`);
-  const payload = await response.json();
+  const payload = await parseMeterResponse(response, "Meter query");
   if (!payload?.Code) throw new Error(payload?.Message || "Meter query failed");
 
   const meter = payload?.Data?.[0];
@@ -125,7 +157,7 @@ async function queryMeterOnce(env) {
   return status;
 }
 
-async function queryMeterWithRetry(env) {
+async function queryMeterWithRetry(env, eventName) {
   const waitsBeforeAttempt = [2000, 3000, 5000];
   let lastError;
 
@@ -136,7 +168,7 @@ async function queryMeterWithRetry(env) {
       return { status, attempt };
     } catch (error) {
       lastError = error;
-      logCron({ ok: false, stage: "query", attempt, error: errorMessage(error) });
+      logMeter(eventName, { ok: false, stage: "query", attempt, error: errorMessage(error) });
     }
   }
 
@@ -146,7 +178,7 @@ async function queryMeterWithRetry(env) {
   throw error;
 }
 
-async function saveReading(env, status) {
+async function saveReading(env, status, source) {
   if (!env.DB) throw new Error("D1 binding DB is missing");
 
   const duplicate = await env.DB.prepare(
@@ -163,21 +195,21 @@ async function saveReading(env, status) {
     `INSERT INTO meter_readings (read_time, kwh, balance, valve_state, source)
      VALUES (?, ?, ?, ?, ?)`
   )
-    .bind(status.lastRead, status.kwh, status.balance, status.valveState ? 1 : 0, "cloudflare-cron-read")
+    .bind(status.lastRead, status.kwh, status.balance, status.valveState ? 1 : 0, source)
     .run();
   return true;
 }
 
-async function saveReadingWithRetry(env, status) {
+async function saveReadingWithRetry(env, status, source, eventName) {
   let lastError;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     if (attempt > 1) await sleep(500);
     try {
-      const inserted = await saveReading(env, status);
+      const inserted = await saveReading(env, status, source);
       return { inserted, attempt };
     } catch (error) {
       lastError = error;
-      logCron({ ok: false, stage: "d1", attempt, error: errorMessage(error) });
+      logMeter(eventName, { ok: false, stage: "d1", attempt, error: errorMessage(error) });
     }
   }
 
@@ -187,18 +219,19 @@ async function saveReadingWithRetry(env, status) {
   throw error;
 }
 
-async function runScheduledRead(env) {
+async function runMeterRead(env, { eventName = "meter_cron", source = "cloudflare-cron-read" } = {}) {
   const startedAt = Date.now();
-  const readAttempt = await readMeterWithRetry(env);
-  const { status, attempt: queryAttempt } = await queryMeterWithRetry(env);
-  const { inserted, attempt: d1Attempt } = await saveReadingWithRetry(env, status);
+  const readAttempt = await readMeterWithRetry(env, eventName);
+  const { status, attempt: queryAttempt } = await queryMeterWithRetry(env, eventName);
+  const { inserted, attempt: d1Attempt } = await saveReadingWithRetry(env, status, source, eventName);
 
-  logCron({
+  const result = {
     ok: true,
     stage: "complete",
     readTime: status.lastRead,
     kwh: status.kwh,
     balance: status.balance,
+    valveState: status.valveState,
     inserted,
     attempts: {
       reading: readAttempt,
@@ -206,19 +239,107 @@ async function runScheduledRead(env) {
       d1: d1Attempt,
     },
     durationMs: Date.now() - startedAt,
-  });
+  };
+  logMeter(eventName, result);
+  return result;
+}
+
+function manualReadButtonScript() {
+  return `<script>
+  (() => {
+    const actions = document.querySelector('.actions');
+    if (!actions || document.getElementById('manualReadBtn')) return;
+    const button = document.createElement('button');
+    button.id = 'manualReadBtn';
+    button.className = 'ghost';
+    button.textContent = '立即抄读';
+    actions.prepend(button);
+    button.addEventListener('click', async () => {
+      if (button.disabled) return;
+      const original = button.textContent;
+      button.disabled = true;
+      button.textContent = '正在抄读...';
+      try {
+        const response = await fetch('/api/manual-read', { method: 'POST', credentials: 'same-origin' });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) throw new Error(data.error || '手动抄读失败');
+        button.textContent = '✓ 抄读成功';
+        if (typeof window.showToast === 'function') window.showToast('手动抄读成功');
+        setTimeout(() => location.reload(), 700);
+      } catch (error) {
+        button.textContent = '抄读失败';
+        alert(error.message || '手动抄读失败');
+        setTimeout(() => { button.disabled = false; button.textContent = original; }, 1500);
+      }
+    });
+  })();
+  </script>`;
+}
+
+async function injectManualReadButton(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (!response.ok || !contentType.includes("text/html")) return response;
+  const html = await response.text();
+  if (html.includes("manualReadBtn")) return new Response(html, response);
+  const body = html.includes("</body>")
+    ? html.replace("</body>", `${manualReadButtonScript()}</body>`)
+    : `${html}${manualReadButtonScript()}`;
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 
 export default {
-  fetch(request, env, ctx) {
-    return app.fetch(request, env, ctx);
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/api/manual-read" && request.method === "POST") {
+      if (!isDashboardAuthorized(request, env)) {
+        return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
+          status: 401,
+          headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+        });
+      }
+
+      try {
+        const result = await runMeterRead(env, {
+          eventName: "meter_manual",
+          source: "cloudflare-manual-read",
+        });
+        return new Response(JSON.stringify(result), {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+        });
+      } catch (error) {
+        logMeter("meter_manual", {
+          ok: false,
+          stage: error?.stage || "unknown",
+          attempt: error?.attempt || null,
+          error: errorMessage(error),
+        });
+        return new Response(JSON.stringify({
+          ok: false,
+          stage: error?.stage || "unknown",
+          error: errorMessage(error),
+        }), {
+          status: 502,
+          headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+        });
+      }
+    }
+
+    const response = await app.fetch(request, env, ctx);
+    return injectManualReadButton(response);
   },
 
   async scheduled(_event, env, _ctx) {
     try {
-      await runScheduledRead(env);
+      await runMeterRead(env, {
+        eventName: "meter_cron",
+        source: "cloudflare-cron-read",
+      });
     } catch (error) {
-      logCron({
+      logMeter("meter_cron", {
         ok: false,
         stage: error?.stage || "unknown",
         attempt: error?.attempt || null,
