@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>集云电表助手</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <style>
+    :root {
+      --bg:#f5f7fb; --card:#fff; --text:#172033; --muted:#7a8498;
+      --line:#e8ecf3; --accent:#2563eb; --good:#16a34a; --warn:#d97706;
+    }
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text)}
+    .wrap{max-width:1120px;margin:0 auto;padding:24px 16px 56px}
+    .top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}
+    h1{font-size:24px;margin:0}.sub{color:var(--muted);font-size:13px;margin-top:5px}
+    .actions{display:flex;gap:10px;flex-wrap:wrap}button{border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+    .ghost{background:#fff;border:1px solid var(--line);color:var(--text)}.primary{background:var(--accent);color:#fff}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 4px 16px rgba(15,23,42,.04)}
+    .label{font-size:13px;color:var(--muted)}.value{font-size:27px;font-weight:750;margin-top:8px}.small{font-size:14px;color:var(--muted);margin-top:8px}
+    .chart-grid{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-top:14px}.chart{height:340px}.timeline{max-height:340px;overflow:auto}
+    .timeline-item{padding:12px 0;border-bottom:1px solid var(--line)}.timeline-time{font-size:12px;color:var(--muted)}.timeline-main{margin-top:4px;font-size:14px}
+    .section-title{font-size:15px;font-weight:700;margin-bottom:8px}.status-good{color:var(--good)}.status-bad{color:#dc2626}
+    .notice{display:none;margin-bottom:14px;padding:11px 13px;border-radius:10px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa}
+    @media(max-width:850px){.grid{grid-template-columns:repeat(2,1fr)}.chart-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.chart{height:300px}}
+    @media(max-width:520px){.grid{grid-template-columns:1fr 1fr}.value{font-size:22px}.card{padding:14px}.wrap{padding-top:16px}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div><h1>⚡ 集云电表助手</h1><div class="sub" id="lastUpdate">正在加载...</div></div>
+    <div class="actions"><button class="ghost" id="refreshBtn">刷新数据</button><button class="primary" id="readBtn">立即抄读</button></div>
+  </div>
+
+  <div class="notice" id="notice"></div>
+
+  <div class="grid">
+    <div class="card"><div class="label">剩余余额</div><div class="value" id="balance">--</div><div class="small">元</div></div>
+    <div class="card"><div class="label">今日用电</div><div class="value" id="todayKwh">--</div><div class="small">kWh</div></div>
+    <div class="card"><div class="label">近 24 小时</div><div class="value" id="last24h">--</div><div class="small">kWh</div></div>
+    <div class="card"><div class="label">7 日平均</div><div class="value" id="avg7d">--</div><div class="small">kWh / 天</div></div>
+  </div>
+
+  <div class="grid" style="margin-top:14px">
+    <div class="card"><div class="label">累计用电</div><div class="value" id="totalKwh">--</div><div class="small">kWh</div></div>
+    <div class="card"><div class="label">今日估算电费</div><div class="value" id="todayCost">--</div><div class="small">元</div></div>
+    <div class="card"><div class="label">估算单价</div><div class="value" id="unitPrice">--</div><div class="small">元 / kWh</div></div>
+    <div class="card"><div class="label">电闸状态</div><div class="value" id="valve">--</div><div class="small" id="meterTime">最近抄读 --</div></div>
+  </div>
+
+  <div class="chart-grid">
+    <div class="card"><div class="section-title">用电时间轴（最近 7 天）</div><div id="trendChart" class="chart"></div></div>
+    <div class="card"><div class="section-title">最近记录</div><div id="timeline" class="timeline"></div></div>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const chart = echarts.init($("trendChart"));
+  const fmt = (v, digits=2) => Number.isFinite(Number(v)) ? Number(v).toFixed(digits) : "--";
+  const showNotice = (msg) => { const el=$("notice"); el.textContent=msg; el.style.display="block"; };
+  const hideNotice = () => $("notice").style.display="none";
+
+  function renderHistory(history){
+    const rows = [...history].sort((a,b)=>new Date(a.read_time)-new Date(b.read_time));
+    const x = rows.map(r => r.read_time?.replace("T"," ").slice(5,16));
+    const base = rows.length ? Number(rows[0].kwh) : 0;
+    const y = rows.map(r => +(Number(r.kwh)-base).toFixed(3));
+    chart.setOption({
+      tooltip:{trigger:"axis"},
+      grid:{left:48,right:18,top:25,bottom:48},
+      xAxis:{type:"category",data:x,boundaryGap:false,axisLabel:{hideOverlap:true}},
+      yAxis:{type:"value",name:"相对用电(kWh)"},
+      series:[{type:"line",data:y,smooth:true,showSymbol:false,areaStyle:{opacity:.08}}]
+    });
+
+    $("timeline").innerHTML = rows.slice(-12).reverse().map(r => `
+      <div class="timeline-item">
+        <div class="timeline-time">${r.read_time || "--"}</div>
+        <div class="timeline-main">${fmt(r.kwh,3)} kWh · 余额 ¥${fmt(r.balance,3)} · ${r.source || "query"}</div>
+      </div>`).join("") || '<div class="small">暂无历史数据，刷新几次后会开始形成时间轴。</div>';
+  }
+
+  function render(data){
+    const {status, summary, history} = data;
+    $("balance").textContent = `¥ ${fmt(status.balance,3)}`;
+    $("todayKwh").textContent = fmt(summary.todayKwh,3);
+    $("last24h").textContent = fmt(summary.last24hKwh,3);
+    $("avg7d").textContent = fmt(summary.avgDailyKwh7d,3);
+    $("totalKwh").textContent = fmt(status.kwh,3);
+    $("todayCost").textContent = fmt(summary.todayCost,3);
+    $("unitPrice").textContent = summary.pricePerKwh == null ? "数据不足" : fmt(summary.pricePerKwh,3);
+    $("valve").textContent = status.valveState ? "合闸" : "断闸";
+    $("valve").className = `value ${status.valveState ? "status-good" : "status-bad"}`;
+    $("meterTime").textContent = `最近抄读 ${status.lastRead || "--"}`;
+    $("lastUpdate").textContent = `页面更新 ${new Date().toLocaleString()} · 服务器记录 ${status.lastRead || "--"}`;
+    renderHistory(history || []);
+  }
+
+  async function loadDashboard(){
+    hideNotice();
+    const r = await fetch("/api/dashboard?days=7", {cache:"no-store"});
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error || "加载失败");
+    render(j.data);
+  }
+
+  async function manualRead(){
+    const btn=$("readBtn"); btn.disabled=true; btn.textContent="抄读中..."; hideNotice();
+    try{
+      const r = await fetch("/api/read", {method:"POST"});
+      const j = await r.json();
+      if(!j.ok) throw new Error(j.error || "抄读失败");
+      await loadDashboard();
+    }catch(e){showNotice(e.message)} finally{btn.disabled=false;btn.textContent="立即抄读"}
+  }
+
+  $("refreshBtn").addEventListener("click", ()=>loadDashboard().catch(e=>showNotice(e.message)));
+  $("readBtn").addEventListener("click", manualRead);
+  window.addEventListener("resize", ()=>chart.resize());
+  loadDashboard().catch(e=>showNotice(e.message));
+  setInterval(()=>loadDashboard().catch(()=>{}), 60000);
+</script>
+</body>
+</html>
