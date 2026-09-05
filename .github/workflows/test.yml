@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  query:
+  read-and-query:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -18,11 +18,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Query meter
+      - name: Read meter and query latest status
         env:
           JISHE_PHONE: ${{ secrets.JISHE_PHONE }}
           JISHE_CUSTOMER_ID: ${{ secrets.JISHE_CUSTOMER_ID }}
           JISHE_ROOM_ID: ${{ secrets.JISHE_ROOM_ID }}
           JISHE_METER_ID: ${{ secrets.JISHE_METER_ID }}
           JISHE_SIGN: ${{ secrets.JISHE_SIGN }}
-        run: python jishe_meter.py query
+        run: python jishe_meter.py read
