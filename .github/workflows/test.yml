@@ -1,9 +1,7 @@
-name: Jishe Meter Scheduled Read
+name: Jishe Meter Manual Read
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
 
 concurrency:
   group: jishe-meter-read
@@ -52,7 +50,6 @@ jobs:
           python - <<'PY'
           import json
           import os
-          import sys
           from urllib.parse import urlparse
 
           import requests
@@ -66,16 +63,15 @@ jobs:
 
           parsed = urlparse(base)
           if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-              print("::error::DASHBOARD_BASE_URL 格式无效，请填写完整的 https://...workers.dev 根地址。")
+              print("::error::DASHBOARD_BASE_URL 格式无效，请填写完整的 https://... 根地址。")
               raise SystemExit(1)
 
           with open("meter_status.json", encoding="utf-8") as f:
               payload = json.load(f)
 
-          url = f"{base}/api/ingest"
           try:
               response = requests.post(
-                  url,
+                  f"{base}/api/ingest",
                   json=payload,
                   headers={"Authorization": f"Bearer {token}"},
                   timeout=20,
@@ -85,20 +81,12 @@ jobs:
               raise SystemExit(1)
 
           print(f"Cloudflare ingest HTTP {response.status_code}")
-          body = response.text[:2000]
-          if body:
-              print(body)
-
+          if response.text:
+              print(response.text[:2000])
           if not response.ok:
-              print("::error::Cloudflare ingest 返回非 2xx，请检查 Worker 是否已重新部署、INGEST_TOKEN 是否一致，以及 DASHBOARD_BASE_URL 是否正确。")
               raise SystemExit(1)
 
-          try:
-              result = response.json()
-          except ValueError:
-              print("::error::Cloudflare ingest 返回的不是 JSON。")
-              raise SystemExit(1)
-
+          result = response.json()
           if not result.get("ok"):
               print(f"::error::Cloudflare ingest 业务失败：{result}")
               raise SystemExit(1)
