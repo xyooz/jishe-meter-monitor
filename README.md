@@ -118,6 +118,8 @@ npx wrangler secret put INGEST_TOKEN
 npm run deploy
 ```
 
+当前推荐使用 Cloudflare Git 集成：以 GitHub `main` 为生产分支，提交后自动执行 `npx wrangler deploy`。
+
 ## API
 
 ```text
