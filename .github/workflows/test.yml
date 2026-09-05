@@ -28,11 +28,36 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Read meter and query latest status
+      - name: Read meter and capture latest status
         env:
           JISHE_PHONE: ${{ secrets.JISHE_PHONE }}
           JISHE_CUSTOMER_ID: ${{ secrets.JISHE_CUSTOMER_ID }}
           JISHE_ROOM_ID: ${{ secrets.JISHE_ROOM_ID }}
           JISHE_METER_ID: ${{ secrets.JISHE_METER_ID }}
           JISHE_SIGN: ${{ secrets.JISHE_SIGN }}
-        run: python jishe_meter.py read
+        run: |
+          python jishe_meter.py read-json > meter_status.json
+          python - <<'PY'
+          import json
+          with open("meter_status.json", encoding="utf-8") as f:
+              s = json.load(f)
+          print(f"抄读完成：{s['kwh']} kWh，余额 {s['balance']} 元，时间 {s['last_read']}")
+          PY
+
+      - name: Persist reading to Cloudflare D1
+        env:
+          DASHBOARD_BASE_URL: ${{ secrets.DASHBOARD_BASE_URL }}
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+        run: |
+          if [ -z "$DASHBOARD_BASE_URL" ] || [ -z "$INGEST_TOKEN" ]; then
+            echo "::warning::未配置 DASHBOARD_BASE_URL 或 INGEST_TOKEN，本次仅完成抄表，不写入 D1。"
+            exit 0
+          fi
+          BASE="${DASHBOARD_BASE_URL%/}"
+          curl --fail-with-body --silent --show-error \
+            --retry 3 --retry-all-errors \
+            -X POST "$BASE/api/ingest" \
+            -H "Authorization: Bearer $INGEST_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary @meter_status.json
+          echo
