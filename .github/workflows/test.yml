@@ -49,15 +49,59 @@ jobs:
           DASHBOARD_BASE_URL: ${{ secrets.DASHBOARD_BASE_URL }}
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
         run: |
-          if [ -z "$DASHBOARD_BASE_URL" ] || [ -z "$INGEST_TOKEN" ]; then
-            echo "::warning::未配置 DASHBOARD_BASE_URL 或 INGEST_TOKEN，本次仅完成抄表，不写入 D1。"
-            exit 0
-          fi
-          BASE="${DASHBOARD_BASE_URL%/}"
-          curl --fail-with-body --silent --show-error \
-            --retry 3 --retry-all-errors \
-            -X POST "$BASE/api/ingest" \
-            -H "Authorization: Bearer $INGEST_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data-binary @meter_status.json
-          echo
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib.parse import urlparse
+
+          import requests
+
+          base = os.getenv("DASHBOARD_BASE_URL", "").strip().rstrip("/")
+          token = os.getenv("INGEST_TOKEN", "").strip()
+
+          if not base or not token:
+              print("::warning::未配置 DASHBOARD_BASE_URL 或 INGEST_TOKEN，本次仅完成抄表，不写入 D1。")
+              raise SystemExit(0)
+
+          parsed = urlparse(base)
+          if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+              print("::error::DASHBOARD_BASE_URL 格式无效，请填写完整的 https://...workers.dev 根地址。")
+              raise SystemExit(1)
+
+          with open("meter_status.json", encoding="utf-8") as f:
+              payload = json.load(f)
+
+          url = f"{base}/api/ingest"
+          try:
+              response = requests.post(
+                  url,
+                  json=payload,
+                  headers={"Authorization": f"Bearer {token}"},
+                  timeout=20,
+              )
+          except requests.RequestException as exc:
+              print(f"::error::请求 Cloudflare ingest 失败：{type(exc).__name__}: {exc}")
+              raise SystemExit(1)
+
+          print(f"Cloudflare ingest HTTP {response.status_code}")
+          body = response.text[:2000]
+          if body:
+              print(body)
+
+          if not response.ok:
+              print("::error::Cloudflare ingest 返回非 2xx，请检查 Worker 是否已重新部署、INGEST_TOKEN 是否一致，以及 DASHBOARD_BASE_URL 是否正确。")
+              raise SystemExit(1)
+
+          try:
+              result = response.json()
+          except ValueError:
+              print("::error::Cloudflare ingest 返回的不是 JSON。")
+              raise SystemExit(1)
+
+          if not result.get("ok"):
+              print(f"::error::Cloudflare ingest 业务失败：{result}")
+              raise SystemExit(1)
+
+          print(f"D1 入库成功：inserted={result.get('inserted')}")
+          PY
