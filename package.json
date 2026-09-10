@@ -4,9 +4,34 @@
   "version": "0.2.0",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "db:init:local": "wrangler d1 execute jishe-meter-history --local --file=./schema.sql",
-    "db:init:remote": "wrangler d1 execute jishe-meter-history --remote --file=./schema.sql"
+    "deploy": "npm run db:init:remote && wrangler deploy",
+    "db:init:local": "wrangler d1 execute DB --local --file=./schema.sql --yes",
+    "db:init:remote": "wrangler d1 execute DB --remote --file=./schema.sql --yes"
+  },
+  "cloudflare": {
+    "bindings": {
+      "JISHE_PHONE": {
+        "description": "集社云账户手机号，用于远程抄表请求。"
+      },
+      "JISHE_CUSTOMER_ID": {
+        "description": "集社云 customer ID，需与当前电表和签名属于同一套配置。"
+      },
+      "JISHE_ROOM_ID": {
+        "description": "要监控房间的 room ID。"
+      },
+      "JISHE_METER_ID": {
+        "description": "要监控电表的 meter ID。"
+      },
+      "JISHE_SIGN": {
+        "description": "集社云接口签名，必须与 phone/customer/room/meter 参数匹配。"
+      },
+      "DASHBOARD_PASSWORD": {
+        "description": "Dashboard Basic Auth 密码，请设置一个随机且足够长的密码。"
+      },
+      "INGEST_TOKEN": {
+        "description": "备用 /api/ingest 接口的 Bearer Token，建议使用随机长字符串。"
+      }
+    }
   },
   "devDependencies": {
     "wrangler": "^4.35.0"
