@@ -15,6 +15,10 @@
 </p>
 
 <p align="center">
+  <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/xyooz/jishe-meter-monitor"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" /></a>
+</p>
+
+<p align="center">
   <a href="https://jishe-meter-monitor.2001.life/"><strong>🌐 在线看板</strong></a>
   · <a href="#-核心功能">核心功能</a>
   · <a href="#-系统架构">系统架构</a>
@@ -137,45 +141,24 @@ src/entry.js                   D1-first 入口；状态/刷新/看板请求直�
 schema.sql                     D1 数据库表结构
 wrangler.toml                  Cloudflare、Cron、D1、日志与静态资源配置
 package.json                   Wrangler 开发 / 部署脚本
+.dev.vars.example              本地开发 Secret 示例
 jishe_meter.py                 GitHub Actions 备用抄表与查询脚本
 .github/workflows/test.yml     手动备用抄读与 D1 入库
 ```
 
 ## ⚙️ 快速部署
 
-### 1. 安装依赖
+### 方式 A：Deploy to Cloudflare（推荐）
 
-```bash
-npm install
-npx wrangler login
-```
+点击下面的按钮：
 
-### 2. 初始化 D1
+<p>
+  <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/xyooz/jishe-meter-monitor"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" /></a>
+</p>
 
-```bash
-npm run db:init:remote
-```
+Cloudflare 会基于仓库中的 Wrangler 配置创建并绑定所需 D1 资源，并在部署过程中提示填写项目需要的 Secret。部署脚本会自动初始化 D1 表结构后发布 Worker。
 
-生产 D1 在 `wrangler.toml` 中绑定：
-
-```text
-binding: DB
-database: jishe-meter-history
-```
-
-Cron 默认每 5 分钟执行一次：
-
-```toml
-[triggers]
-crons = ["*/5 * * * *"]
-```
-
-### 3. 配置 Secrets
-
-> [!WARNING]
-> 不要把手机号、房间 ID、电表 ID、签名、密码或鉴权 Token 提交到仓库。
-
-Cloudflare Worker 需要：
+需要准备：
 
 ```text
 JISHE_PHONE
@@ -187,7 +170,41 @@ DASHBOARD_PASSWORD
 INGEST_TOKEN
 ```
 
-可以使用 Wrangler CLI 写入：
+> [!IMPORTANT]
+> 前 5 个参数必须来自同一套有效的集社云电表配置。`DASHBOARD_PASSWORD` 与 `INGEST_TOKEN` 建议使用随机长字符串。
+
+### 方式 B：Wrangler 手动部署
+
+#### 1. 安装依赖
+
+```bash
+git clone https://github.com/xyooz/jishe-meter-monitor.git
+cd jishe-meter-monitor
+npm install
+npx wrangler login
+```
+
+#### 2. 准备 D1
+
+首次自行部署时，请在自己的 Cloudflare 账户创建 D1，并将 `wrangler.toml` 中的 D1 配置指向自己的数据库。表结构可以通过以下命令初始化：
+
+```bash
+npm run db:init:remote
+```
+
+Cron 默认每 5 分钟执行一次：
+
+```toml
+[triggers]
+crons = ["*/5 * * * *"]
+```
+
+#### 3. 配置 Secrets
+
+> [!WARNING]
+> 不要把手机号、房间 ID、电表 ID、签名、密码或鉴权 Token 提交到仓库。
+
+可以复制 `.dev.vars.example` 作为本地开发参考；生产环境使用 Wrangler Secret：
 
 ```bash
 npx wrangler secret put JISHE_PHONE
@@ -199,17 +216,17 @@ npx wrangler secret put DASHBOARD_PASSWORD
 npx wrangler secret put INGEST_TOKEN
 ```
 
-前 5 个参数必须来自同一套有效电表配置。若 ID 与 `JISHE_SIGN` 不匹配，Reading 接口可能返回“签名错误”。
-
-### 4. 部署
+#### 4. 部署
 
 ```bash
 npm run deploy
 ```
 
+`npm run deploy` 会先执行 D1 schema 初始化，再部署 Worker；`schema.sql` 使用 `IF NOT EXISTS`，因此重复执行不会重复创建表或索引。
+
 也可以使用 Cloudflare Git 集成，以 GitHub `main` 为生产分支，提交后自动执行 Wrangler 部署。
 
-### 5. 可选：配置 GitHub Actions 备用抄读
+### 可选：配置 GitHub Actions 备用抄读
 
 如果需要保留手动备用链路，再配置：
 
