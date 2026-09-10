@@ -2,6 +2,19 @@
 
 一个用于远程抄读、查询并统计集社云电表数据的轻量 Web 看板。
 
+<p>
+  <a href="https://jishe-meter-monitor.2001.life/"><strong>🌐 在线看板</strong></a>
+  · Cloudflare Workers
+  · D1
+  · ECharts
+</p>
+
+> 看板启用了 Basic Auth。下图使用演示数据，仅用于展示界面与功能，不包含真实电表、余额或账户信息。
+
+![Jishe Meter Monitor Dashboard Preview](docs/assets/dashboard-preview.svg)
+
+远程抄表结果会持续写入 Cloudflare D1，打开网页即可查看余额、今日/近 24 小时用电、7 日平均、用电趋势、最近采样记录和月度用电日历，并可进一步查看单日曲线与分时明细。
+
 ## 当前功能
 
 - Cloudflare Workers Cron 每 5 分钟主动远程抄表
