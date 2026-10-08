@@ -78,9 +78,9 @@ async function getHistory(env, days = 7) {
     `SELECT id, read_time, kwh, balance, valve_state, source,
             replace(created_at, ' ', 'T') || 'Z' AS collected_at
      FROM meter_readings
-     WHERE datetime(created_at) >= datetime('now', ?)
+     WHERE read_time >= datetime('now', ?, '+8 hours')
        AND read_time >= ?
-     ORDER BY datetime(created_at) ASC, id ASC`
+     ORDER BY read_time ASC, id ASC`
   )
     .bind(`-${safeDays} days`, DATA_START_AT)
     .all();
@@ -94,7 +94,7 @@ async function getLatestStatus(env) {
             replace(created_at, ' ', 'T') || 'Z' AS collected_at
      FROM meter_readings
      WHERE read_time >= ?
-     ORDER BY datetime(read_time) DESC, id DESC
+     ORDER BY read_time DESC, id DESC
      LIMIT 1`
   )
     .bind(DATA_START_AT)

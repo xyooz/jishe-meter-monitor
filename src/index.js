@@ -106,9 +106,9 @@ async function getHistory(env, days = 7) {
     `SELECT id, read_time, kwh, balance, valve_state, source,
             replace(created_at, ' ', 'T') || 'Z' AS collected_at
      FROM meter_readings
-     WHERE datetime(created_at) >= datetime('now', ?)
+     WHERE read_time >= datetime('now', ?, '+8 hours')
        AND read_time >= ?
-     ORDER BY datetime(created_at) ASC, id ASC`
+     ORDER BY read_time ASC, id ASC`
   )
     .bind(`-${safeDays} days`, DATA_START_AT)
     .all();
@@ -125,35 +125,64 @@ async function getCalendar(env, requestedMonth) {
   const start = `${month}-01`;
   const end = new Date(Date.UTC(year, monthNumber, 1)).toISOString().slice(0, 10);
 
-  const result = await env.DB.prepare(
-    `WITH ordered AS (
-       SELECT id, read_time, kwh, balance,
-              LAG(kwh) OVER (ORDER BY datetime(read_time), id) AS previous_kwh,
-              LAG(balance) OVER (ORDER BY datetime(read_time), id) AS previous_balance
+  // Limit D1 reads to this month plus one baseline row before month start.
+  // This preserves delta calculations without scanning the full history.
+  const [baseline, result] = await Promise.all([
+    env.DB.prepare(
+      `SELECT read_time, kwh, balance
        FROM meter_readings
-       WHERE read_time >= ?
-     ), daily AS (
-       SELECT substr(read_time, 1, 10) AS day,
-              CASE WHEN previous_kwh IS NOT NULL AND kwh >= previous_kwh
-                   THEN kwh - previous_kwh ELSE 0 END AS kwh_delta,
-              CASE WHEN previous_kwh IS NOT NULL AND kwh > previous_kwh
-                         AND previous_balance IS NOT NULL AND balance <= previous_balance
-                   THEN previous_balance - balance ELSE 0 END AS cost_delta
-       FROM ordered
        WHERE read_time >= ? AND read_time < ?
-     )
-     SELECT day,
-            ROUND(SUM(kwh_delta), 3) AS kwh,
-            ROUND(SUM(cost_delta), 3) AS cost,
-            COUNT(*) AS samples
-     FROM daily
-     GROUP BY day
-     ORDER BY day ASC`
-  )
-    .bind(DATA_START_AT, start, end)
-    .all();
+       ORDER BY read_time DESC, id DESC
+       LIMIT 1`
+    )
+      .bind(DATA_START_AT, start)
+      .first(),
+    env.DB.prepare(
+      `SELECT read_time, kwh, balance
+       FROM meter_readings
+       WHERE read_time >= ? AND read_time < ? AND read_time >= ?
+       ORDER BY read_time ASC, id ASC`
+    )
+      .bind(start, end, DATA_START_AT)
+      .all(),
+  ]);
 
-  return { month, days: result.results || [], dataStartAt: DATA_START_AT };
+  const daily = new Map();
+  let previous = baseline || null;
+
+  for (const current of result.results || []) {
+    const day = String(current.read_time || "").slice(0, 10);
+    const item = daily.get(day) || { day, kwh: 0, cost: 0, samples: 0 };
+
+    if (previous) {
+      const kwhDelta = Number(current.kwh) - Number(previous.kwh);
+      const balanceDelta = Number(previous.balance) - Number(current.balance);
+      if (Number.isFinite(kwhDelta) && kwhDelta >= 0) item.kwh += kwhDelta;
+      if (
+        Number.isFinite(kwhDelta) &&
+        kwhDelta > 0 &&
+        Number.isFinite(balanceDelta) &&
+        balanceDelta > 0
+      ) {
+        item.cost += balanceDelta;
+      }
+    }
+
+    item.samples += 1;
+    daily.set(day, item);
+    previous = current;
+  }
+
+  return {
+    month,
+    days: [...daily.values()].map(item => ({
+      day: item.day,
+      kwh: Number(item.kwh.toFixed(3)),
+      cost: Number(item.cost.toFixed(3)),
+      samples: item.samples,
+    })),
+    dataStartAt: DATA_START_AT,
+  };
 }
 
 function median(values) {

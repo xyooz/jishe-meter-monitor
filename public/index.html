@@ -136,7 +136,7 @@
   async function loadDashboard({manual=false}={}){
     if(loading&&manual)return;loading=true;hideNotice();const before=lastKnownRead;if(manual)setRefreshState("loading");
     try{
-      const r=await fetch("/api/dashboard?days=7",{cache:"no-store"}),j=await r.json();if(!j.ok)throw new Error(j.error||"加载失败");render(j.data);loadCalendar().catch(e=>showNotice(e.message));
+      const r=await fetch("/api/dashboard?days=7",{cache:"no-store"}),j=await r.json();if(!j.ok)throw new Error(j.error||"加载失败");render(j.data);
       if(manual){setRefreshState("success");showToast(before&&j.data.status.lastRead===before?`已刷新，仍是最近一次抄读（${j.data.status.lastRead||"--"}）`:`数据已更新 · ${j.data.status.lastRead||"--"}`);setTimeout(()=>setRefreshState("idle"),1300)}
     }catch(e){if(manual)setRefreshState("idle");throw e}finally{loading=false}
   }
@@ -180,13 +180,14 @@
     try{const r=await fetch(`/api/day?date=${encodeURIComponent(date)}`,{cache:"no-store"}),j=await r.json();if(!j.ok)throw new Error(j.error||"当日详情加载失败");renderDayDetails(j.data)}catch(e){$("dayModalBody").innerHTML=`<div class="empty-detail">${e.message}</div>`}
   }
 
-  $("refreshBtn").addEventListener("click",()=>loadDashboard({manual:true}).catch(e=>showNotice(e.message)));
+  $("refreshBtn").addEventListener("click",async()=>{try{await loadDashboard({manual:true});await loadCalendar()}catch(e){showNotice(e.message)}});
   $("prevMonth").addEventListener("click",()=>{calendarCursor.setMonth(calendarCursor.getMonth()-1);loadCalendar().catch(e=>showNotice(e.message))});
   $("nextMonth").addEventListener("click",()=>{calendarCursor.setMonth(calendarCursor.getMonth()+1);loadCalendar().catch(e=>showNotice(e.message))});
   $("calendarGrid").addEventListener("click",e=>{const cell=e.target.closest(".calendar-day[data-date]");if(cell)openDay(cell.dataset.date)});
   $("closeDayModal").addEventListener("click",closeDayModal);$("dayModal").addEventListener("click",e=>{if(e.target===$("dayModal"))closeDayModal()});document.addEventListener("keydown",e=>{if(e.key==="Escape")closeDayModal()});
   window.addEventListener("resize",()=>{chart.resize();dayCumulativeChart?.resize();dayHourlyChart?.resize()});
-  loadDashboard().catch(e=>showNotice(e.message));setInterval(()=>loadDashboard().catch(()=>{}),60*1000);
+  loadDashboard().catch(e=>showNotice(e.message));loadCalendar().catch(e=>showNotice(e.message));
+  setInterval(()=>{if(document.visibilityState==="visible")loadDashboard().catch(()=>{})},5*60*1000);
 </script>
 </body>
 </html>
